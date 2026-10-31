@@ -18,6 +18,8 @@ enum TSSettingsIndex: Int, CaseIterable {
     case usesLargeFont
     case usesArrowPrefixes
     case usesBitrate
+    case showSecond
+    case useMilliseconds
 
     var key: String {
         switch self {
@@ -41,6 +43,10 @@ enum TSSettingsIndex: Int, CaseIterable {
             return HUDUserDefaultsKeyUsesArrowPrefixes
         case .usesBitrate:
             return HUDUserDefaultsKeyUsesBitrate
+        case .showSecond:
+            return HUDUserDefaultsKeyShowSecond
+        case .useMilliseconds:
+            return HUDUserDefaultsKeyUseMilliseconds
         }
     }
 
@@ -66,6 +72,10 @@ enum TSSettingsIndex: Int, CaseIterable {
             return NSLocalizedString("Prefixes", comment: "TSSettingsIndex")
         case .usesBitrate:
             return NSLocalizedString("Unit", comment: "TSSettingsIndex")
+        case .showSecond:
+            return NSLocalizedString("Clock", comment: "TSSettingsIndex")
+        case .useMilliseconds:
+            return NSLocalizedString("Clock Unit", comment: "TSSettingsIndex")
         }
     }
 
@@ -93,6 +103,10 @@ enum TSSettingsIndex: Int, CaseIterable {
             return highlighted ? NSLocalizedString("↑↓", comment: "TSSettingsIndex") : NSLocalizedString("▲▼", comment: "TSSettingsIndex")
         case .usesBitrate:
             return highlighted ? NSLocalizedString("b/s", comment: "TSSettingsIndex") : NSLocalizedString("B/s", comment: "TSSettingsIndex")
+        case .showSecond:
+            return highlighted ? NSLocalizedString("ON", comment: "TSSettingsIndex") : NSLocalizedString("OFF", comment: "TSSettingsIndex")
+        case .useMilliseconds:
+            return highlighted ? NSLocalizedString("ms", comment: "TSSettingsIndex") : NSLocalizedString("s", comment: "TSSettingsIndex")
         }
     }
 }

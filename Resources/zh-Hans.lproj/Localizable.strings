@@ -168,3 +168,16 @@
 
 /* No comment provided by engineer. */
 "▲▼" = "▲▼";
+
+/* No comment provided by engineer. */
+"Clock" = "时钟";
+
+/* No comment provided by engineer. */
+"Clock Unit" = "时钟单位";
+
+/* No comment provided by engineer. */
+"ms" = "毫秒";
+
+/* No comment provided by engineer. */
+"s" = "秒";
+

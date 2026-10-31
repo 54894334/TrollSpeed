@@ -130,6 +130,8 @@ static uint8_t HUD_SHOW_SECOND_SPEED_IN_NEW_LINE = 0;
 static const char *HUD_UPLOAD_PREFIX = "▲";
 static const char *HUD_DOWNLOAD_PREFIX = "▼";
 static uint8_t HUD_DISPLAY_MODE = 0;  // 0=Speed, 1=FPS
+static uint8_t HUD_SHOW_SECOND = 0;          // 左侧实时秒数开关
+static uint8_t HUD_USE_MILLISECONDS = 0;     // 0=秒, 1=毫秒
 
 typedef struct {
     uint64_t inputBytes;
@@ -437,6 +439,27 @@ static NSAttributedString *formattedAttributedString(BOOL isFocused)
     }
 }
 
+static NSAttributedString *formattedSecondAttributedString(void)
+{
+    // 左侧实时秒数/毫秒：取当前系统时钟，每 UPDATE_INTERVAL 刷新一次
+    @autoreleasepool
+    {
+        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+        if (HUD_USE_MILLISECONDS) {
+            // 毫秒：取当前时间的毫秒部分，显示三位毫秒值（000-999）
+            [formatter setDateFormat:@"SSS"];
+        } else {
+            // 秒：显示当前秒（00-59）
+            [formatter setDateFormat:@"ss"];
+        }
+        NSString *secondString = [formatter stringFromDate:[NSDate date]];
+
+        return [[NSAttributedString alloc] initWithString:secondString attributes:@{
+            NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT]
+        }];
+    }
+}
+
 static NSAttributedString *formattedFPSAttributedString(BOOL isFocused)
 {
     @autoreleasepool
@@ -492,6 +515,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     ScreenshotInvisibleContainer *_containerView;
     UIView *_contentView;
     HUDBackdropLabel *_speedLabel;
+    HUDBackdropLabel *_secondLabel;
     UIImageView *_lockedView;
     NSTimer *_timer;
     UITapGestureRecognizer *_tapGestureRecognizer;
@@ -585,6 +609,12 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     HUD_UPLOAD_PREFIX = (usesArrowPrefixes ? "↑" : "▲");
     HUD_DOWNLOAD_PREFIX = (usesArrowPrefixes ? "↓" : "▼");
 
+    BOOL showSecond = [self showSecond];
+    HUD_SHOW_SECOND = showSecond;
+
+    BOOL useMilliseconds = [self useMilliseconds];
+    HUD_USE_MILLISECONDS = useMilliseconds;
+
     BOOL usesCustomFontSize = [self usesCustomFontSize];
     if (!usesCustomFontSize) {
         BOOL usesLargeFont = [self usesLargeFont];
@@ -601,6 +631,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     HUD_INACTIVE_OPACITY = (usesInvertedColor ? 1.0 : 0.667);
     [_blurView setEffect:(usesInvertedColor ? nil : _blurEffect)];
     [_speedLabel setColorInvertEnabled:usesInvertedColor];
+    [_secondLabel setColorInvertEnabled:usesInvertedColor];
     [_lockedView setHidden:usesInvertedColor];
 
     BOOL hideAtSnapshot = [self hideAtSnapshot];
@@ -673,6 +704,20 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 {
     [self loadUserDefaults:NO];
     NSNumber *mode = [_userDefaults objectForKey:HUDUserDefaultsKeyDisplayMode];
+    return mode != nil ? [mode boolValue] : NO;
+}
+
+- (BOOL)showSecond
+{
+    [self loadUserDefaults:NO];
+    NSNumber *mode = [_userDefaults objectForKey:HUDUserDefaultsKeyShowSecond];
+    return mode != nil ? [mode boolValue] : NO;
+}
+
+- (BOOL)useMilliseconds
+{
+    [self loadUserDefaults:NO];
+    NSNumber *mode = [_userDefaults objectForKey:HUDUserDefaultsKeyUseMilliseconds];
     return mode != nil ? [mode boolValue] : NO;
 }
 
@@ -844,6 +889,16 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         [_speedLabel setAttributedText:attributedText];
     }
     [_speedLabel sizeToFit];
+
+    // 左侧实时秒数/毫秒：开关控制显隐，每秒刷新
+    [_secondLabel setHidden:!HUD_SHOW_SECOND];
+    if (HUD_SHOW_SECOND) {
+        NSAttributedString *secondText = formattedSecondAttributedString();
+        if (secondText) {
+            [_secondLabel setAttributedText:secondText];
+        }
+        [_secondLabel sizeToFit];
+    }
 }
 
 - (void)viewDidLoad
@@ -873,6 +928,15 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _speedLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_speedLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
     [_blurView.contentView addSubview:_speedLabel];
+
+    _secondLabel = [[HUDBackdropLabel alloc] initWithFrame:CGRectZero];
+    _secondLabel.numberOfLines = 1;
+    _secondLabel.textAlignment = NSTextAlignmentLeft;
+    _secondLabel.textColor = [UIColor whiteColor];
+    _secondLabel.font = [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT];
+    _secondLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [_secondLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
+    [_blurView.contentView addSubview:_secondLabel];
 
     _lockedView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill"]];
     _lockedView.tintColor = [UIColor whiteColor];
@@ -1058,13 +1122,24 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         [_speedLabel.bottomAnchor constraintEqualToAnchor:_contentView.bottomAnchor],
     ]];
 
+    BOOL showSecond = (HUD_SHOW_SECOND != 0);
+
+    if (showSecond) {
+        // 左侧秒数 label：leading 对齐 contentView，垂直与 speedLabel 对齐，speedLabel 紧随其后
+        [_constraints addObjectsFromArray:@[
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:_contentView.leadingAnchor],
+            [_secondLabel.centerYAnchor constraintEqualToAnchor:_speedLabel.centerYAnchor],
+            [_secondLabel.trailingAnchor constraintEqualToAnchor:_speedLabel.leadingAnchor constant:-6],
+        ]];
+    }
+
     _centerXConstraint = [_speedLabel.centerXAnchor constraintEqualToAnchor:layoutGuide.centerXAnchor];
-    if (isCentered) {
+    if (isCentered && !showSecond) {
         [_constraints addObject:_centerXConstraint];
     }
 
     _leadingConstraint = [_speedLabel.leadingAnchor constraintEqualToAnchor:_contentView.leadingAnchor constant:10];
-    if (selectedMode == HUDPresetPositionTopLeft) {
+    if (selectedMode == HUDPresetPositionTopLeft && !showSecond) {
         [_constraints addObject:_leadingConstraint];
     }
 
@@ -1073,12 +1148,21 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         [_constraints addObject:_trailingConstraint];
     }
 
-    [_constraints addObjectsFromArray:@[
-        [_blurView.topAnchor constraintEqualToAnchor:_speedLabel.topAnchor constant:-2],
-        [_blurView.leadingAnchor constraintEqualToAnchor:_speedLabel.leadingAnchor constant:-4],
-        [_blurView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor constant:4],
-        [_blurView.bottomAnchor constraintEqualToAnchor:_speedLabel.bottomAnchor constant:2],
-    ]];
+    if (showSecond) {
+        [_constraints addObjectsFromArray:@[
+            [_blurView.topAnchor constraintEqualToAnchor:_speedLabel.topAnchor constant:-2],
+            [_blurView.leadingAnchor constraintEqualToAnchor:_secondLabel.leadingAnchor constant:-4],
+            [_blurView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor constant:4],
+            [_blurView.bottomAnchor constraintEqualToAnchor:_speedLabel.bottomAnchor constant:2],
+        ]];
+    } else {
+        [_constraints addObjectsFromArray:@[
+            [_blurView.topAnchor constraintEqualToAnchor:_speedLabel.topAnchor constant:-2],
+            [_blurView.leadingAnchor constraintEqualToAnchor:_speedLabel.leadingAnchor constant:-4],
+            [_blurView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor constant:4],
+            [_blurView.bottomAnchor constraintEqualToAnchor:_speedLabel.bottomAnchor constant:2],
+        ]];
+    }
 
     [_constraints addObjectsFromArray:@[
         [_lockedView.topAnchor constraintGreaterThanOrEqualToAnchor:_blurView.topAnchor constant:2],
