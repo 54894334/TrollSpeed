@@ -527,10 +527,12 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     UIBlurEffect *_blurEffect;
     UIVisualEffectView *_blurView;
     ScreenshotInvisibleContainer *_containerView;
+    ScreenshotInvisibleContainer *_clockContainerView;  // 时钟独立防截图容器，锚左上角，与主容器零约束关联
     UIView *_contentView;
     UIView *_chainView;         // 网速的水平容器，定位/居中/圆角都锚它，消除布局歧义
     HUDBackdropLabel *_speedLabel;
     HUDBackdropLabel *_secondLabel;
+    UIVisualEffectView *_clockBlurView;  // 时钟胶囊的毛玻璃背景
     UIImageView *_lockedView;
     NSTimer *_timer;
     NSTimer *_secondTimer;      // 秒数/毫秒独立刷新 timer，毫秒模式高频、秒模式低频
@@ -636,16 +638,19 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         BOOL usesLargeFont = [self usesLargeFont];
         HUD_FONT_SIZE = (usesLargeFont ? HUD_MAX_FONT_SIZE : HUD_MIN_FONT_SIZE);
         [_blurView.layer setCornerRadius:(usesLargeFont ? HUD_MAX_CORNER_RADIUS : HUD_MIN_CORNER_RADIUS)];
+        [_clockBlurView.layer setCornerRadius:(usesLargeFont ? HUD_MAX_CORNER_RADIUS : HUD_MIN_CORNER_RADIUS)];
     } else {
         CGFloat realCustomFontSize = MIN(MAX([self realCustomFontSize], 8), 12);
         HUD_FONT_SIZE = realCustomFontSize;
         [_blurView.layer setCornerRadius:realCustomFontSize / 2.0];
+        [_clockBlurView.layer setCornerRadius:realCustomFontSize / 2.0];
     }
 
     BOOL usesInvertedColor = [self usesInvertedColor];
     HUD_FONT_WEIGHT = (usesInvertedColor ? UIFontWeightMedium : UIFontWeightRegular);
     HUD_INACTIVE_OPACITY = (usesInvertedColor ? 1.0 : 0.667);
     [_blurView setEffect:(usesInvertedColor ? nil : _blurEffect)];
+    [_clockBlurView setEffect:(usesInvertedColor ? nil : _blurEffect)];
     [_speedLabel setColorInvertEnabled:usesInvertedColor];
     [_secondLabel setColorInvertEnabled:usesInvertedColor];
     [_lockedView setHidden:usesInvertedColor];
@@ -653,8 +658,10 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     BOOL hideAtSnapshot = [self hideAtSnapshot];
     if (hideAtSnapshot) {
         [_containerView setupContainerAsHideContentInScreenshots];
+        [_clockContainerView setupContainerAsHideContentInScreenshots];
     } else {
         [_containerView setupContainerAsDisplayContentInScreenshots];
+        [_clockContainerView setupContainerAsDisplayContentInScreenshots];
     }
 
     BOOL displayMode = [self displayMode];
@@ -913,10 +920,11 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 // 独立的秒数/毫秒刷新：开关控制显隐，毫秒模式 20Hz 高频刷新保证连贯
 - (void)updateSecondLabel
 {
-    // 时钟只在竖屏显示；横屏隐藏（用户要求横屏不显示时钟）
+    // 时钟只在竖屏显示；横屏隐藏（用户要求横屏不显示时钟）。
+    // 隐藏整个时钟胶囊（含毛玻璃背景），避免留下空毛玻璃块。
     BOOL isLandscape = [self isLandscapeOrientation];
     BOOL shouldHide = (!HUD_SHOW_SECOND || isLandscape);
-    [_secondLabel setHidden:shouldHide];
+    [_clockContainerView.hiddenContainer setHidden:shouldHide];
     if (shouldHide) return;
 
     NSAttributedString *secondText = formattedSecondAttributedString();
@@ -960,9 +968,17 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     [_speedLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
     [_chainView addSubview:_speedLabel];
 
-    // 时钟：与网速放在同一个 _chainView 水平容器里，排在网速左边，中间空格分隔。
-    // 整条链（时钟 + 空格 + 网速）被同一个 _blurView + _containerView 包住，防截图自动生效，
-    // 位置预设（左上/中间/右上）也由原作者逻辑统一处理，不做独立定位。
+    // 时钟：独立防截图胶囊，锚定屏幕左上角（系统时间正下方），与速度主容器零约束关联，
+    // 避免第二个 canvas 与主 canvas 的尺寸互相反推导致 Auto Layout 死锁。
+    // 时钟胶囊用自己的 ScreenshotInvisibleContainer（UITextField）做防截图，content 是毛玻璃 view。
+    _clockBlurView = [[UIVisualEffectView alloc] initWithEffect:_blurEffect];
+    _clockBlurView.layer.cornerRadius = HUD_MIN_CORNER_RADIUS;
+    _clockBlurView.layer.masksToBounds = YES;
+    _clockBlurView.translatesAutoresizingMaskIntoConstraints = NO;
+    _clockContainerView = [[ScreenshotInvisibleContainer alloc] initWithContent:_clockBlurView];
+    _clockContainerView.hiddenContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    [_contentView addSubview:_clockContainerView.hiddenContainer];
+
     _secondLabel = [[HUDBackdropLabel alloc] initWithFrame:CGRectZero];
     _secondLabel.numberOfLines = 1;
     _secondLabel.textAlignment = NSTextAlignmentLeft;
@@ -970,7 +986,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _secondLabel.font = [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT];
     _secondLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_secondLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
-    [_chainView addSubview:_secondLabel];
+    [_clockBlurView.contentView addSubview:_secondLabel];
 
     _lockedView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill"]];
     _lockedView.tintColor = [UIColor whiteColor];
@@ -1159,34 +1175,39 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         }
     }
 
-    BOOL showSecond = (HUD_SHOW_SECOND != 0);
-
-    // 链容器承载「时钟(可选) + 空格 + 网速」，整条链沿用原作者的位置预设/防截图机制。
-    // 垂直方向：链高度 = max(时钟高, 网速高)。网速可能换行成两行，时钟单行垂直居中。
+    // 速度链：只承载网速，恢复原作者的单链结构（时钟已移出到独立胶囊）
     [_constraints addObjectsFromArray:@[
         [_speedLabel.topAnchor constraintEqualToAnchor:_chainView.topAnchor],
         [_speedLabel.bottomAnchor constraintEqualToAnchor:_chainView.bottomAnchor],
+        [_speedLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+        [_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor],
     ]];
 
-    if (showSecond) {
-        // 时钟在左、网速在右：时钟垂直居中于链，中间 12pt 空格分隔
-        [_constraints addObjectsFromArray:@[
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
-            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
-            [_speedLabel.leadingAnchor constraintEqualToAnchor:_secondLabel.trailingAnchor constant:12],
-        ]];
-    } else {
-        // 无时钟：链只含网速，网速 leading 即链 leading；
-        // 同时把时钟压成 0 宽，避免无约束的 hidden 视图触发 Auto Layout 歧义
-        [_constraints addObjectsFromArray:@[
-            [_speedLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
-            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
-            [_secondLabel.widthAnchor constraintEqualToConstant:0],
-        ]];
-    }
-    // 链 trailing 恒等于网速 trailing（无论有无时钟）
-    [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
+    // 时钟胶囊：独立防截图容器，锚定屏幕左上角（safeArea 顶部 = 系统时间正下方）。
+    // 尺寸由 _secondLabel 的 intrinsicContentSize 确定，不与主容器/chainView 产生任何约束关联，杜绝死锁。
+    [_constraints addObjectsFromArray:@[
+        [_secondLabel.topAnchor constraintEqualToAnchor:_clockBlurView.contentView.topAnchor constant:2],
+        [_secondLabel.bottomAnchor constraintEqualToAnchor:_clockBlurView.contentView.bottomAnchor constant:-2],
+        [_secondLabel.leadingAnchor constraintEqualToAnchor:_clockBlurView.contentView.leadingAnchor constant:4],
+        [_secondLabel.trailingAnchor constraintEqualToAnchor:_clockBlurView.contentView.trailingAnchor constant:-4],
+    ]];
+
+    // 时钟胶囊四边锚定其 canvas（_clockContainerView.hiddenContainer），label 内容定尺寸 → canvas 尺寸确定，不循环
+    [_constraints addObjectsFromArray:@[
+        [_clockBlurView.topAnchor constraintEqualToAnchor:_clockContainerView.hiddenContainer.topAnchor],
+        [_clockBlurView.leadingAnchor constraintEqualToAnchor:_clockContainerView.hiddenContainer.leadingAnchor],
+        [_clockBlurView.trailingAnchor constraintEqualToAnchor:_clockContainerView.hiddenContainer.trailingAnchor],
+        [_clockBlurView.bottomAnchor constraintEqualToAnchor:_clockContainerView.hiddenContainer.bottomAnchor],
+    ]];
+
+    // 时钟胶囊定位到左上角：系统时间（状态栏）正下方。
+    // 竖屏才显示，横屏隐藏（updateSecondLabel 里处理显隐，这里只定位）。
+    // 用 layoutGuide（safeArea）顶部往下留出状态栏下方间距，leading 贴左边缘。
+    CGFloat clockTopOffset = (CGRectGetMinY(layoutGuide.layoutFrame) >= 51) ? 4 : 2;
+    [_constraints addObjectsFromArray:@[
+        [_clockContainerView.hiddenContainer.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor constant:8],
+        [_clockContainerView.hiddenContainer.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor constant:clockTopOffset],
+    ]];
 
     // 链的整体定位：统一锚 _chainView（原作者的居中/左上/右上预设，横屏/竖屏逻辑不变）
     _centerXConstraint = [_chainView.centerXAnchor constraintEqualToAnchor:layoutGuide.centerXAnchor];
@@ -1204,7 +1225,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         [_constraints addObject:_trailingConstraint];
     }
 
-    // blurView 包住整条链
+    // blurView 包住速度链（毛玻璃胶囊只包网速，不包时钟）
     [_constraints addObjectsFromArray:@[
         [_blurView.topAnchor constraintEqualToAnchor:_chainView.topAnchor constant:-2],
         [_blurView.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor constant:-4],
