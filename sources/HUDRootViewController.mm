@@ -10,6 +10,7 @@
 #import <ifaddrs.h>
 #import <objc/runtime.h>
 #import <mach/vm_param.h>
+#import <math.h>
 #import <Foundation/Foundation.h>
 
 #import "HUDPresetPosition.h"
@@ -132,6 +133,8 @@ static const char *HUD_DOWNLOAD_PREFIX = "▼";
 static uint8_t HUD_DISPLAY_MODE = 0;  // 0=Speed, 1=FPS
 static uint8_t HUD_SHOW_SECOND = 0;          // 左侧实时秒数开关
 static uint8_t HUD_USE_MILLISECONDS = 0;     // 0=秒, 1=毫秒
+#define SECOND_REFRESH_INTERVAL_MS 0.05  // 毫秒模式刷新间隔（20Hz，平滑显示毫秒）
+#define SECOND_REFRESH_INTERVAL_SEC 1.0  // 秒模式刷新间隔
 
 typedef struct {
     uint64_t inputBytes;
@@ -441,19 +444,31 @@ static NSAttributedString *formattedAttributedString(BOOL isFocused)
 
 static NSAttributedString *formattedSecondAttributedString(void)
 {
-    // 左侧实时秒数/毫秒：取当前系统时钟，每 UPDATE_INTERVAL 刷新一次
+    // 左侧实时秒数/毫秒：直接取当前时刻的秒/毫秒分量，避免 NSDateFormatter 每次新建带来的抖动
     @autoreleasepool
     {
-        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-        if (HUD_USE_MILLISECONDS) {
-            // 毫秒：取当前时间的毫秒部分，显示三位毫秒值（000-999）
-            [formatter setDateFormat:@"SSS"];
-        } else {
-            // 秒：显示当前秒（00-59）
-            [formatter setDateFormat:@"ss"];
-        }
-        NSString *secondString = [formatter stringFromDate:[NSDate date]];
+        // 用 high-resolution 时钟取当前时间，毫秒模式真正每秒多次刷新时才连贯
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        double integral;
+        double frac = modf(now, &integral);
 
+        NSString *secondString;
+        if (HUD_USE_MILLISECONDS) {
+            // 毫秒模式：显示 mm:ss.SSS，带秒 + 三位毫秒，更直观
+            long totalSeconds = (long)integral;
+            long ss = totalSeconds % 60;
+            long mm = (totalSeconds / 60) % 60;
+            long ms = (long)(frac * 1000.0);
+            if (ms >= 1000) { ms = 999; }
+            secondString = [NSString stringWithFormat:@"%02ld:%02ld.%03ld", mm, ss, ms];
+        } else {
+            // 秒模式：仅显示两位秒
+            long totalSeconds = (long)integral;
+            long ss = totalSeconds % 60;
+            secondString = [NSString stringWithFormat:@"%02ld", ss];
+        }
+
+        // 等宽数字，保证每秒刷新时宽度稳定不抖动
         return [[NSAttributedString alloc] initWithString:secondString attributes:@{
             NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT]
         }];
@@ -514,10 +529,12 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     UIVisualEffectView *_blurView;
     ScreenshotInvisibleContainer *_containerView;
     UIView *_contentView;
+    UIView *_chainView;         // 秒数 + 网速 的水平容器，定位/居中/圆角都锚它，消除布局歧义
     HUDBackdropLabel *_speedLabel;
     HUDBackdropLabel *_secondLabel;
     UIImageView *_lockedView;
     NSTimer *_timer;
+    NSTimer *_secondTimer;      // 秒数/毫秒独立刷新 timer，毫秒模式高频、秒模式低频
     UITapGestureRecognizer *_tapGestureRecognizer;
     UIPanGestureRecognizer *_panGestureRecognizer;
     UIImpactFeedbackGenerator *_impactFeedbackGenerator;
@@ -661,6 +678,9 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     } else {
         [self keepFocus:_contentView];
     }
+
+    // 开关/毫秒模式切换后立即刷新一次秒数，避免等下一个 timer 周期才生效
+    [self updateSecondLabel];
 
     [self performSelector:@selector(onBlur:) withObject:_contentView afterDelay:IDLE_INTERVAL];
 }
@@ -889,16 +909,19 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         [_speedLabel setAttributedText:attributedText];
     }
     [_speedLabel sizeToFit];
+}
 
-    // 左侧实时秒数/毫秒：开关控制显隐，每秒刷新
+// 独立的秒数/毫秒刷新：开关控制显隐，毫秒模式 20Hz 高频刷新保证连贯
+- (void)updateSecondLabel
+{
     [_secondLabel setHidden:!HUD_SHOW_SECOND];
-    if (HUD_SHOW_SECOND) {
-        NSAttributedString *secondText = formattedSecondAttributedString();
-        if (secondText) {
-            [_secondLabel setAttributedText:secondText];
-        }
-        [_secondLabel sizeToFit];
+    if (!HUD_SHOW_SECOND) return;
+
+    NSAttributedString *secondText = formattedSecondAttributedString();
+    if (secondText) {
+        [_secondLabel setAttributedText:secondText];
     }
+    [_secondLabel sizeToFit];
 }
 
 - (void)viewDidLoad
@@ -920,6 +943,12 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _containerView.hiddenContainer.translatesAutoresizingMaskIntoConstraints = NO;
     [_contentView addSubview:_containerView.hiddenContainer];
 
+    // 链容器：透明 view，只用于统一承载秒数+网速的水平布局
+    _chainView = [[UIView alloc] init];
+    _chainView.backgroundColor = [UIColor clearColor];
+    _chainView.translatesAutoresizingMaskIntoConstraints = NO;
+    [_blurView.contentView addSubview:_chainView];
+
     _speedLabel = [[HUDBackdropLabel alloc] initWithFrame:CGRectZero];
     _speedLabel.numberOfLines = 0;
     _speedLabel.textAlignment = NSTextAlignmentCenter;
@@ -927,7 +956,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _speedLabel.font = [UIFont systemFontOfSize:HUD_FONT_SIZE];
     _speedLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_speedLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
-    [_blurView.contentView addSubview:_speedLabel];
+    [_chainView addSubview:_speedLabel];
 
     _secondLabel = [[HUDBackdropLabel alloc] initWithFrame:CGRectZero];
     _secondLabel.numberOfLines = 1;
@@ -936,7 +965,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _secondLabel.font = [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT];
     _secondLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_secondLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
-    [_blurView.contentView addSubview:_secondLabel];
+    [_chainView addSubview:_secondLabel];
 
     _lockedView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill"]];
     _lockedView.tintColor = [UIColor whiteColor];
@@ -972,12 +1001,19 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 {
     [_timer invalidate];
     _timer = [NSTimer scheduledTimerWithTimeInterval:UPDATE_INTERVAL target:self selector:@selector(updateSpeedLabel) userInfo:nil repeats:YES];
+
+    // 秒数 timer：毫秒模式 20Hz，秒模式 1Hz
+    [_secondTimer invalidate];
+    NSTimeInterval secondInterval = (HUD_USE_MILLISECONDS ? SECOND_REFRESH_INTERVAL_MS : SECOND_REFRESH_INTERVAL_SEC);
+    _secondTimer = [NSTimer scheduledTimerWithTimeInterval:secondInterval target:self selector:@selector(updateSecondLabel) userInfo:nil repeats:YES];
 }
 
 - (void)stopLoopTimer
 {
     [_timer invalidate];
     _timer = nil;
+    [_secondTimer invalidate];
+    _secondTimer = nil;
 }
 
 - (void)viewSafeAreaInsetsDidChange
@@ -1117,52 +1153,58 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         }
     }
 
-    [_constraints addObjectsFromArray:@[
-        [_speedLabel.topAnchor constraintEqualToAnchor:_contentView.topAnchor],
-        [_speedLabel.bottomAnchor constraintEqualToAnchor:_contentView.bottomAnchor],
-    ]];
-
     BOOL showSecond = (HUD_SHOW_SECOND != 0);
 
+    // 链容器承载「秒数(可选) + 网速」，所有定位/圆角统一锚它，避免约束歧义。
+    // 垂直方向：链高度 = max(秒数高, 网速高)。网速可能换行成两行，秒数单行居中。
+    [_constraints addObjectsFromArray:@[
+        [_speedLabel.topAnchor constraintEqualToAnchor:_chainView.topAnchor],
+        [_speedLabel.bottomAnchor constraintEqualToAnchor:_chainView.bottomAnchor],
+    ]];
+
     if (showSecond) {
-        // 左侧秒数 label：leading 对齐 contentView，垂直与 speedLabel 对齐，speedLabel 紧随其后
+        // 秒数在左、网速在右，秒数垂直居中于链
         [_constraints addObjectsFromArray:@[
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:_contentView.leadingAnchor],
-            [_secondLabel.centerYAnchor constraintEqualToAnchor:_speedLabel.centerYAnchor],
-            [_secondLabel.trailingAnchor constraintEqualToAnchor:_speedLabel.leadingAnchor constant:-6],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
+            [_speedLabel.leadingAnchor constraintEqualToAnchor:_secondLabel.trailingAnchor constant:6],
+        ]];
+    } else {
+        // 无秒数：链只含网速，网速 leading 即链 leading；
+        // 同时把秒数 label 压成 0 宽，避免无约束的 hidden 视图触发 Auto Layout 歧义
+        [_constraints addObjectsFromArray:@[
+            [_speedLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
+            [_secondLabel.widthAnchor constraintEqualToConstant:0],
         ]];
     }
+    // 链 trailing 恒等于网速 trailing（无论有无秒数）
+    [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
 
-    _centerXConstraint = [_speedLabel.centerXAnchor constraintEqualToAnchor:layoutGuide.centerXAnchor];
-    if (isCentered && !showSecond) {
+    // 链的整体定位：统一锚 _chainView，不再分别锚 speedLabel
+    _centerXConstraint = [_chainView.centerXAnchor constraintEqualToAnchor:layoutGuide.centerXAnchor];
+    if (isCentered) {
         [_constraints addObject:_centerXConstraint];
     }
 
-    _leadingConstraint = [_speedLabel.leadingAnchor constraintEqualToAnchor:_contentView.leadingAnchor constant:10];
-    if (selectedMode == HUDPresetPositionTopLeft && !showSecond) {
+    _leadingConstraint = [_chainView.leadingAnchor constraintEqualToAnchor:_contentView.leadingAnchor constant:10];
+    if (selectedMode == HUDPresetPositionTopLeft) {
         [_constraints addObject:_leadingConstraint];
     }
 
-    _trailingConstraint = [_speedLabel.trailingAnchor constraintEqualToAnchor:_contentView.trailingAnchor constant:-10];
+    _trailingConstraint = [_chainView.trailingAnchor constraintEqualToAnchor:_contentView.trailingAnchor constant:-10];
     if (selectedMode == HUDPresetPositionTopRight) {
         [_constraints addObject:_trailingConstraint];
     }
 
-    if (showSecond) {
-        [_constraints addObjectsFromArray:@[
-            [_blurView.topAnchor constraintEqualToAnchor:_speedLabel.topAnchor constant:-2],
-            [_blurView.leadingAnchor constraintEqualToAnchor:_secondLabel.leadingAnchor constant:-4],
-            [_blurView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor constant:4],
-            [_blurView.bottomAnchor constraintEqualToAnchor:_speedLabel.bottomAnchor constant:2],
-        ]];
-    } else {
-        [_constraints addObjectsFromArray:@[
-            [_blurView.topAnchor constraintEqualToAnchor:_speedLabel.topAnchor constant:-2],
-            [_blurView.leadingAnchor constraintEqualToAnchor:_speedLabel.leadingAnchor constant:-4],
-            [_blurView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor constant:4],
-            [_blurView.bottomAnchor constraintEqualToAnchor:_speedLabel.bottomAnchor constant:2],
-        ]];
-    }
+    // blurView 包住整条链
+    [_constraints addObjectsFromArray:@[
+        [_blurView.topAnchor constraintEqualToAnchor:_chainView.topAnchor constant:-2],
+        [_blurView.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor constant:-4],
+        [_blurView.trailingAnchor constraintEqualToAnchor:_chainView.trailingAnchor constant:4],
+        [_blurView.bottomAnchor constraintEqualToAnchor:_chainView.bottomAnchor constant:2],
+    ]];
 
     [_constraints addObjectsFromArray:@[
         [_lockedView.topAnchor constraintGreaterThanOrEqualToAnchor:_blurView.topAnchor constant:2],

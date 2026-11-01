@@ -2,9 +2,6 @@ name: Build Tipa
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*.*"
 
 permissions:
   contents: write
@@ -26,9 +23,7 @@ jobs:
           curl -fsSL -o /tmp/sdks.tar.gz https://github.com/theos/sdks/archive/refs/heads/master.tar.gz
           tar -xzf /tmp/sdks.tar.gz -C /tmp
           cp -R /tmp/sdks-master/*.sdk "$THEOS/sdks/" || true
-          ls "$THEOS/sdks"
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
-          echo "/usr/local/opt/make/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: 编译标准 tipa
         run: |
@@ -38,9 +33,7 @@ jobs:
       - name: 收集产物
         run: |
           mkdir -p dist
-          ls -la packages/
-          cp packages/*.tipa dist/ 2>/dev/null || true
-          ls -la dist
+          cp packages/*.tipa dist/
 
       - uses: actions/upload-artifact@v4
         with:
