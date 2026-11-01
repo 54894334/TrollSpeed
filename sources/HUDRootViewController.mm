@@ -913,8 +913,10 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 // 独立的秒数/毫秒刷新：开关控制显隐，毫秒模式 20Hz 高频刷新保证连贯
 - (void)updateSecondLabel
 {
-    [_secondLabel setHidden:!HUD_SHOW_SECOND];
-    if (!HUD_SHOW_SECOND) return;
+    // 时钟只在竖屏显示；横屏隐藏（用户要求横屏不显示时钟）
+    BOOL isLandscape = [self isLandscapeOrientation];
+    [_secondLabel setHidden:(!HUD_SHOW_SECOND || isLandscape)];
+    if (!HUD_SHOW_SECOND || isLandscape) return;
 
     NSAttributedString *secondText = formattedSecondAttributedString();
     if (secondText) {
@@ -957,9 +959,8 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     [_speedLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
     [_chainView addSubview:_speedLabel];
 
-    // 时钟：直接用 HUDBackdropLabel（自带 CABackdropLayer 背景），固定在左上角，
-    // 与网速悬浮窗完全解耦。不用 ScreenshotInvisibleContainer 包，避免 UITextField
-    // 私有 canvas 懒加载时序问题导致 hiddenContainer 为 nil 而崩溃/不显示。
+    // 时钟：放进 _chainView（网速同一个水平容器），排在网速左边。
+    // 沿用原作者的 blurView + 防截图 + 位置预设整套机制，不需要单独容器。
     _secondLabel = [[HUDBackdropLabel alloc] initWithFrame:CGRectZero];
     _secondLabel.numberOfLines = 1;
     _secondLabel.textAlignment = NSTextAlignmentLeft;
@@ -967,7 +968,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _secondLabel.font = [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT];
     _secondLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_secondLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
-    [self.view addSubview:_secondLabel];
+    [_chainView addSubview:_secondLabel];
 
     _lockedView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill"]];
     _lockedView.tintColor = [UIColor whiteColor];
@@ -1157,33 +1158,34 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 
     BOOL showSecond = (HUD_SHOW_SECOND != 0);
 
-    // 链容器只承载网速（秒数已独立挂到 _contentView，见下方 showSecond 分支）。
-    // 垂直方向：链高度 = 网速高度。
+    // 链容器承载「时钟(可选) + 网速」，整条链沿用原作者的位置预设/防截图机制。
+    // 垂直方向：链高度 = 网速高度（网速可能换行两行），时钟单行垂直居中。
     [_constraints addObjectsFromArray:@[
         [_speedLabel.topAnchor constraintEqualToAnchor:_chainView.topAnchor],
         [_speedLabel.bottomAnchor constraintEqualToAnchor:_chainView.bottomAnchor],
-        [_speedLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
     ]];
-    // 链 trailing 恒等于网速 trailing
-    [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
 
     if (showSecond) {
-        // 时钟固定左上角：直接锚 safeArea 顶部 + 左侧，显示在系统状态栏时间正下方。
-        // 与 _contentView/_chainView 完全无关，网速居中/左上/右上/灵动岛都不影响时钟。
+        // 时钟在左、网速在右：时钟垂直居中于链，网速紧随其后
         [_constraints addObjectsFromArray:@[
-            [_secondLabel.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor constant:2],
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor constant:4],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
+            [_speedLabel.leadingAnchor constraintEqualToAnchor:_secondLabel.trailingAnchor constant:6],
         ]];
     } else {
-        // 无时钟：隐藏并压成 0 宽，避免无约束视图触发 Auto Layout 歧义
+        // 无时钟：链只含网速，网速 leading 即链 leading；
+        // 同时把时钟压成 0 宽，避免无约束的 hidden 视图触发 Auto Layout 歧义
         [_constraints addObjectsFromArray:@[
-            [_secondLabel.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor],
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor],
+            [_speedLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
             [_secondLabel.widthAnchor constraintEqualToConstant:0],
         ]];
     }
+    // 链 trailing 恒等于网速 trailing
+    [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
 
-    // 链的整体定位：统一锚 _chainView，不再分别锚 speedLabel
+    // 链的整体定位：统一锚 _chainView（原作者的居中/左上/右上预设，横屏/竖屏逻辑不变）
     _centerXConstraint = [_chainView.centerXAnchor constraintEqualToAnchor:layoutGuide.centerXAnchor];
     if (isCentered) {
         [_constraints addObject:_centerXConstraint];
