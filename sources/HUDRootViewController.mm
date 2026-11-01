@@ -1185,19 +1185,13 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 
     // 时钟胶囊：独立防截图容器，锚定屏幕左上角（safeArea 顶部 = 系统时间正下方）。
     // 尺寸由 _secondLabel 的 intrinsicContentSize 确定，不与主容器/chainView 产生任何约束关联，杜绝死锁。
+    // 注意：_clockBlurView 四边锚 canvas 已由 ScreenshotInvisibleContainer.init 自动完成，这里不再重复，
+    // 只补 label 到 clockBlurView 的 padding。
     [_constraints addObjectsFromArray:@[
         [_secondLabel.topAnchor constraintEqualToAnchor:_clockBlurView.contentView.topAnchor constant:2],
         [_secondLabel.bottomAnchor constraintEqualToAnchor:_clockBlurView.contentView.bottomAnchor constant:-2],
         [_secondLabel.leadingAnchor constraintEqualToAnchor:_clockBlurView.contentView.leadingAnchor constant:4],
         [_secondLabel.trailingAnchor constraintEqualToAnchor:_clockBlurView.contentView.trailingAnchor constant:-4],
-    ]];
-
-    // 时钟胶囊四边锚定其 canvas（_clockContainerView.hiddenContainer），label 内容定尺寸 → canvas 尺寸确定，不循环
-    [_constraints addObjectsFromArray:@[
-        [_clockBlurView.topAnchor constraintEqualToAnchor:_clockContainerView.hiddenContainer.topAnchor],
-        [_clockBlurView.leadingAnchor constraintEqualToAnchor:_clockContainerView.hiddenContainer.leadingAnchor],
-        [_clockBlurView.trailingAnchor constraintEqualToAnchor:_clockContainerView.hiddenContainer.trailingAnchor],
-        [_clockBlurView.bottomAnchor constraintEqualToAnchor:_clockContainerView.hiddenContainer.bottomAnchor],
     ]];
 
     // 时钟胶囊定位到左上角：系统时间（状态栏）正下方。
