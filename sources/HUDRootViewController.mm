@@ -527,8 +527,6 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     UIBlurEffect *_blurEffect;
     UIVisualEffectView *_blurView;
     ScreenshotInvisibleContainer *_containerView;
-    ScreenshotInvisibleContainer *_secondContainer;   // 时钟防截图容器，独立于网速悬浮窗
-    UIVisualEffectView *_secondBlurView;              // 时钟的背景 blur view
     UIView *_contentView;
     UIView *_chainView;         // 秒数 + 网速 的水平容器，定位/居中/圆角都锚它，消除布局歧义
     HUDBackdropLabel *_speedLabel;
@@ -638,19 +636,16 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         BOOL usesLargeFont = [self usesLargeFont];
         HUD_FONT_SIZE = (usesLargeFont ? HUD_MAX_FONT_SIZE : HUD_MIN_FONT_SIZE);
         [_blurView.layer setCornerRadius:(usesLargeFont ? HUD_MAX_CORNER_RADIUS : HUD_MIN_CORNER_RADIUS)];
-        [_secondBlurView.layer setCornerRadius:(usesLargeFont ? HUD_MAX_CORNER_RADIUS : HUD_MIN_CORNER_RADIUS)];
     } else {
         CGFloat realCustomFontSize = MIN(MAX([self realCustomFontSize], 8), 12);
         HUD_FONT_SIZE = realCustomFontSize;
         [_blurView.layer setCornerRadius:realCustomFontSize / 2.0];
-        [_secondBlurView.layer setCornerRadius:realCustomFontSize / 2.0];
     }
 
     BOOL usesInvertedColor = [self usesInvertedColor];
     HUD_FONT_WEIGHT = (usesInvertedColor ? UIFontWeightMedium : UIFontWeightRegular);
     HUD_INACTIVE_OPACITY = (usesInvertedColor ? 1.0 : 0.667);
     [_blurView setEffect:(usesInvertedColor ? nil : _blurEffect)];
-    [_secondBlurView setEffect:(usesInvertedColor ? nil : _blurEffect)];
     [_speedLabel setColorInvertEnabled:usesInvertedColor];
     [_secondLabel setColorInvertEnabled:usesInvertedColor];
     [_lockedView setHidden:usesInvertedColor];
@@ -658,10 +653,8 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     BOOL hideAtSnapshot = [self hideAtSnapshot];
     if (hideAtSnapshot) {
         [_containerView setupContainerAsHideContentInScreenshots];
-        [_secondContainer setupContainerAsHideContentInScreenshots];
     } else {
         [_containerView setupContainerAsDisplayContentInScreenshots];
-        [_secondContainer setupContainerAsDisplayContentInScreenshots];
     }
 
     BOOL displayMode = [self displayMode];
@@ -964,15 +957,9 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     [_speedLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
     [_chainView addSubview:_speedLabel];
 
-    // 时钟独立容器：单独的 blur 背景 + 防截图容器，固定左上角，与网速悬浮窗完全解耦。
-    _secondBlurView = [[UIVisualEffectView alloc] initWithEffect:_blurEffect];
-    _secondBlurView.layer.cornerRadius = HUD_MIN_CORNER_RADIUS;
-    _secondBlurView.layer.masksToBounds = YES;
-    _secondBlurView.translatesAutoresizingMaskIntoConstraints = NO;
-    _secondContainer = [[ScreenshotInvisibleContainer alloc] initWithContent:_secondBlurView];
-    _secondContainer.hiddenContainer.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:_secondContainer.hiddenContainer];
-
+    // 时钟：直接用 HUDBackdropLabel（自带 CABackdropLayer 背景），固定在左上角，
+    // 与网速悬浮窗完全解耦。不用 ScreenshotInvisibleContainer 包，避免 UITextField
+    // 私有 canvas 懒加载时序问题导致 hiddenContainer 为 nil 而崩溃/不显示。
     _secondLabel = [[HUDBackdropLabel alloc] initWithFrame:CGRectZero];
     _secondLabel.numberOfLines = 1;
     _secondLabel.textAlignment = NSTextAlignmentLeft;
@@ -980,7 +967,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _secondLabel.font = [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT];
     _secondLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_secondLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
-    [_secondBlurView.contentView addSubview:_secondLabel];
+    [self.view addSubview:_secondLabel];
 
     _lockedView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill"]];
     _lockedView.tintColor = [UIColor whiteColor];
@@ -1181,28 +1168,18 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
 
     if (showSecond) {
-        // 时钟固定左上角：容器锚 safeArea 顶部 + 左侧，显示在系统状态栏时间正下方。
+        // 时钟固定左上角：直接锚 safeArea 顶部 + 左侧，显示在系统状态栏时间正下方。
         // 与 _contentView/_chainView 完全无关，网速居中/左上/右上/灵动岛都不影响时钟。
         [_constraints addObjectsFromArray:@[
-            [_secondContainer.hiddenContainer.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor constant:2],
-            [_secondContainer.hiddenContainer.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor constant:4],
-        ]];
-
-        // 时钟文字撑满 blur 背景（带 padding），让圆角背景刚好包住文字
-        [_constraints addObjectsFromArray:@[
-            [_secondLabel.topAnchor constraintEqualToAnchor:_secondBlurView.topAnchor constant:2],
-            [_secondLabel.bottomAnchor constraintEqualToAnchor:_secondBlurView.bottomAnchor constant:-2],
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:_secondBlurView.leadingAnchor constant:5],
-            [_secondLabel.trailingAnchor constraintEqualToAnchor:_secondBlurView.trailingAnchor constant:-5],
+            [_secondLabel.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor constant:2],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor constant:4],
         ]];
     } else {
         // 无时钟：隐藏并压成 0 宽，避免无约束视图触发 Auto Layout 歧义
         [_constraints addObjectsFromArray:@[
-            [_secondContainer.hiddenContainer.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor],
-            [_secondContainer.hiddenContainer.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor],
-            [_secondContainer.hiddenContainer.widthAnchor constraintEqualToConstant:0],
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:_secondBlurView.leadingAnchor],
-            [_secondLabel.centerYAnchor constraintEqualToAnchor:_secondBlurView.centerYAnchor],
+            [_secondLabel.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor],
+            [_secondLabel.widthAnchor constraintEqualToConstant:0],
         ]];
     }
 
