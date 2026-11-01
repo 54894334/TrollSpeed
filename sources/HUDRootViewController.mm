@@ -454,15 +454,14 @@ static NSAttributedString *formattedSecondAttributedString(void)
 
         NSString *secondString;
         if (HUD_USE_MILLISECONDS) {
-            // 毫秒模式：显示 mm:ss.SSS，带秒 + 三位毫秒，更直观
+            // 毫秒模式：只显示 ss.SSS（秒 + 三位毫秒），不显示分钟
             long totalSeconds = (long)integral;
             long ss = totalSeconds % 60;
-            long mm = (totalSeconds / 60) % 60;
             long ms = (long)(frac * 1000.0);
             if (ms >= 1000) { ms = 999; }
-            secondString = [NSString stringWithFormat:@"%02ld:%02ld.%03ld", mm, ss, ms];
+            secondString = [NSString stringWithFormat:@"%02ld.%03ld", ss, ms];
         } else {
-            // 秒模式：仅显示两位秒
+            // 秒模式：仅显示两位秒，不显示分钟
             long totalSeconds = (long)integral;
             long ss = totalSeconds % 60;
             secondString = [NSString stringWithFormat:@"%02ld", ss];
@@ -965,7 +964,8 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _secondLabel.font = [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT];
     _secondLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_secondLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
-    [_chainView addSubview:_secondLabel];
+    // 秒数独立于网速链，直接挂在 _contentView 上，固定在左下角（状态栏时间下方）
+    [_contentView addSubview:_secondLabel];
 
     _lockedView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill"]];
     _lockedView.tintColor = [UIColor whiteColor];
@@ -1155,32 +1155,31 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 
     BOOL showSecond = (HUD_SHOW_SECOND != 0);
 
-    // 链容器承载「秒数(可选) + 网速」，所有定位/圆角统一锚它，避免约束歧义。
-    // 垂直方向：链高度 = max(秒数高, 网速高)。网速可能换行成两行，秒数单行居中。
+    // 链容器只承载网速（秒数已独立挂到 _contentView，见下方 showSecond 分支）。
+    // 垂直方向：链高度 = 网速高度。
     [_constraints addObjectsFromArray:@[
         [_speedLabel.topAnchor constraintEqualToAnchor:_chainView.topAnchor],
         [_speedLabel.bottomAnchor constraintEqualToAnchor:_chainView.bottomAnchor],
+        [_speedLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
     ]];
+    // 链 trailing 恒等于网速 trailing
+    [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
 
     if (showSecond) {
-        // 秒数在左、网速在右，秒数垂直居中于链
+        // 秒数独立定位：固定在屏幕左下角（内容区左侧 + 底部），显示在系统状态栏时间下方。
+        // 不参与网速链，避免与网速居中/左右定位互相打架。
         [_constraints addObjectsFromArray:@[
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
-            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
-            [_speedLabel.leadingAnchor constraintEqualToAnchor:_secondLabel.trailingAnchor constant:6],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:_contentView.leadingAnchor constant:6],
+            [_secondLabel.bottomAnchor constraintEqualToAnchor:_contentView.bottomAnchor constant:-6],
         ]];
     } else {
-        // 无秒数：链只含网速，网速 leading 即链 leading；
-        // 同时把秒数 label 压成 0 宽，避免无约束的 hidden 视图触发 Auto Layout 歧义
+        // 无秒数：隐藏并把秒数压成 0 宽，避免无约束视图触发 Auto Layout 歧义
         [_constraints addObjectsFromArray:@[
-            [_speedLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
-            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:_contentView.leadingAnchor],
+            [_secondLabel.bottomAnchor constraintEqualToAnchor:_contentView.bottomAnchor],
             [_secondLabel.widthAnchor constraintEqualToConstant:0],
         ]];
     }
-    // 链 trailing 恒等于网速 trailing（无论有无秒数）
-    [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
 
     // 链的整体定位：统一锚 _chainView，不再分别锚 speedLabel
     _centerXConstraint = [_chainView.centerXAnchor constraintEqualToAnchor:layoutGuide.centerXAnchor];
