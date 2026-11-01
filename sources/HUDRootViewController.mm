@@ -960,9 +960,9 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     [_speedLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
     [_chainView addSubview:_speedLabel];
 
-    // 时钟：独立 HUDBackdropLabel，直接挂 self.view，固定左上角，与网速悬浮窗完全解耦。
-    // 不套 ScreenshotInvisibleContainer——第二个 UITextField 容器会导致 hiddenContainer
-    // 尺寸链无法收敛（label 四边锚 canvas，canvas 又靠 label 反推尺寸），Auto Layout 死循环卡死。
+    // 时钟：与网速放在同一个 _chainView 水平容器里，排在网速左边，中间空格分隔。
+    // 整条链（时钟 + 空格 + 网速）被同一个 _blurView + _containerView 包住，防截图自动生效，
+    // 位置预设（左上/中间/右上）也由原作者逻辑统一处理，不做独立定位。
     _secondLabel = [[HUDBackdropLabel alloc] initWithFrame:CGRectZero];
     _secondLabel.numberOfLines = 1;
     _secondLabel.textAlignment = NSTextAlignmentLeft;
@@ -970,7 +970,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _secondLabel.font = [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT];
     _secondLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_secondLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
-    [self.view addSubview:_secondLabel];
+    [_chainView addSubview:_secondLabel];
 
     _lockedView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill"]];
     _lockedView.tintColor = [UIColor whiteColor];
@@ -1161,32 +1161,34 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 
     BOOL showSecond = (HUD_SHOW_SECOND != 0);
 
-    // 链容器只承载网速（时钟已独立挂到 self.view，见下方 showSecond 分支）。
-    // 垂直方向：链高度 = 网速高度。水平方向：链 = 网速。
+    // 链容器承载「时钟(可选) + 空格 + 网速」，整条链沿用原作者的位置预设/防截图机制。
+    // 垂直方向：链高度 = max(时钟高, 网速高)。网速可能换行成两行，时钟单行垂直居中。
     [_constraints addObjectsFromArray:@[
         [_speedLabel.topAnchor constraintEqualToAnchor:_chainView.topAnchor],
         [_speedLabel.bottomAnchor constraintEqualToAnchor:_chainView.bottomAnchor],
-        [_speedLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
     ]];
-    [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
 
     if (showSecond) {
-        // 时钟独立固定左上角：直接锚 safeArea 顶部 + 左侧，显示在状态栏时间正下方。
-        // 不套容器、不参与网速链，避免尺寸循环导致 Auto Layout 卡死。
+        // 时钟在左、网速在右：时钟垂直居中于链，中间 12pt 空格分隔
         [_constraints addObjectsFromArray:@[
-            [_secondLabel.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor constant:2],
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor constant:4],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
+            [_speedLabel.leadingAnchor constraintEqualToAnchor:_secondLabel.trailingAnchor constant:12],
         ]];
     } else {
-        // 无时钟：压成 0 宽，避免无约束视图触发 Auto Layout 歧义
+        // 无时钟：链只含网速，网速 leading 即链 leading；
+        // 同时把时钟压成 0 宽，避免无约束的 hidden 视图触发 Auto Layout 歧义
         [_constraints addObjectsFromArray:@[
-            [_secondLabel.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor],
-            [_secondLabel.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor],
+            [_speedLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:_chainView.leadingAnchor],
+            [_secondLabel.centerYAnchor constraintEqualToAnchor:_chainView.centerYAnchor],
             [_secondLabel.widthAnchor constraintEqualToConstant:0],
         ]];
     }
+    // 链 trailing 恒等于网速 trailing（无论有无时钟）
+    [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
 
-    // 速度链定位：沿用原作者三方向逻辑（居中时 centerX，左上 leading，右上 trailing）
+    // 链的整体定位：统一锚 _chainView（原作者的居中/左上/右上预设，横屏/竖屏逻辑不变）
     _centerXConstraint = [_chainView.centerXAnchor constraintEqualToAnchor:layoutGuide.centerXAnchor];
     if (isCentered) {
         [_constraints addObject:_centerXConstraint];
