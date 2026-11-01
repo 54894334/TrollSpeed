@@ -527,9 +527,8 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     UIBlurEffect *_blurEffect;
     UIVisualEffectView *_blurView;
     ScreenshotInvisibleContainer *_containerView;
-    ScreenshotInvisibleContainer *_clockContainer;   // 时钟独立防截图容器，固定左上角
     UIView *_contentView;
-    UIView *_chainView;         // 秒数 + 网速 的水平容器，定位/居中/圆角都锚它，消除布局歧义
+    UIView *_chainView;         // 网速的水平容器，定位/居中/圆角都锚它，消除布局歧义
     HUDBackdropLabel *_speedLabel;
     HUDBackdropLabel *_secondLabel;
     UIImageView *_lockedView;
@@ -654,10 +653,8 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     BOOL hideAtSnapshot = [self hideAtSnapshot];
     if (hideAtSnapshot) {
         [_containerView setupContainerAsHideContentInScreenshots];
-        [_clockContainer setupContainerAsHideContentInScreenshots];
     } else {
         [_containerView setupContainerAsDisplayContentInScreenshots];
-        [_clockContainer setupContainerAsDisplayContentInScreenshots];
     }
 
     BOOL displayMode = [self displayMode];
@@ -920,7 +917,6 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     BOOL isLandscape = [self isLandscapeOrientation];
     BOOL shouldHide = (!HUD_SHOW_SECOND || isLandscape);
     [_secondLabel setHidden:shouldHide];
-    [_clockContainer.hiddenContainer setHidden:shouldHide];
     if (shouldHide) return;
 
     NSAttributedString *secondText = formattedSecondAttributedString();
@@ -964,9 +960,9 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     [_speedLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
     [_chainView addSubview:_speedLabel];
 
-    // 时钟：独立防截图容器，固定左上角，与网速悬浮窗完全解耦。
-    // content 直接是 HUDBackdropLabel（自带 CABackdropLayer 背景），结构最简单，
-    // 不引入 UIVisualEffectView 的尺寸计算，避免约束链过于复杂。
+    // 时钟：独立 HUDBackdropLabel，直接挂 self.view，固定左上角，与网速悬浮窗完全解耦。
+    // 不套 ScreenshotInvisibleContainer——第二个 UITextField 容器会导致 hiddenContainer
+    // 尺寸链无法收敛（label 四边锚 canvas，canvas 又靠 label 反推尺寸），Auto Layout 死循环卡死。
     _secondLabel = [[HUDBackdropLabel alloc] initWithFrame:CGRectZero];
     _secondLabel.numberOfLines = 1;
     _secondLabel.textAlignment = NSTextAlignmentLeft;
@@ -974,9 +970,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     _secondLabel.font = [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE weight:HUD_FONT_WEIGHT];
     _secondLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_secondLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisVertical];
-    _clockContainer = [[ScreenshotInvisibleContainer alloc] initWithContent:_secondLabel];
-    _clockContainer.hiddenContainer.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:_clockContainer.hiddenContainer];
+    [self.view addSubview:_secondLabel];
 
     _lockedView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill"]];
     _lockedView.tintColor = [UIColor whiteColor];
@@ -1047,9 +1041,9 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
         isLandscape = UIInterfaceOrientationIsLandscape(_orientation);
     }
 
-    // 速度固定中间：强制居中模式，不再跟随左上/右上三方向预设（时钟已独立固定左上角）
-    HUDPresetPosition selectedMode = HUDPresetPositionTopCenter;
-    BOOL isCentered = YES;
+    // 速度位置：沿用原作者三方向预设逻辑（左上/中间/右上，默认中间居中）。
+    HUDPresetPosition selectedMode = [self selectedModeForCurrentOrientation];
+    BOOL isCentered = (selectedMode == HUDPresetPositionTopCenter || selectedMode == HUDPresetPositionTopCenterMost);
     BOOL isCenteredMost = (selectedMode == HUDPresetPositionTopCenterMost);
     BOOL isPad = ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad);
 
@@ -1167,7 +1161,7 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 
     BOOL showSecond = (HUD_SHOW_SECOND != 0);
 
-    // 链容器只承载网速（时钟已独立挂到 _clockContainer，见下方）。
+    // 链容器只承载网速（时钟已独立挂到 self.view，见下方 showSecond 分支）。
     // 垂直方向：链高度 = 网速高度。水平方向：链 = 网速。
     [_constraints addObjectsFromArray:@[
         [_speedLabel.topAnchor constraintEqualToAnchor:_chainView.topAnchor],
@@ -1177,24 +1171,36 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
     [_constraints addObject:[_chainView.trailingAnchor constraintEqualToAnchor:_speedLabel.trailingAnchor]];
 
     if (showSecond) {
-        // 时钟独立固定左上角：容器锚 safeArea 顶部 + 左侧，显示在状态栏时间正下方。
-        // 与网速链完全无关，网速固定中间也不影响时钟。
+        // 时钟独立固定左上角：直接锚 safeArea 顶部 + 左侧，显示在状态栏时间正下方。
+        // 不套容器、不参与网速链，避免尺寸循环导致 Auto Layout 卡死。
         [_constraints addObjectsFromArray:@[
-            [_clockContainer.hiddenContainer.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor constant:2],
-            [_clockContainer.hiddenContainer.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor constant:4],
+            [_secondLabel.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor constant:2],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor constant:4],
         ]];
     } else {
         // 无时钟：压成 0 宽，避免无约束视图触发 Auto Layout 歧义
         [_constraints addObjectsFromArray:@[
-            [_clockContainer.hiddenContainer.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor],
-            [_clockContainer.hiddenContainer.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor],
-            [_clockContainer.hiddenContainer.widthAnchor constraintEqualToConstant:0],
+            [_secondLabel.topAnchor constraintEqualToAnchor:layoutGuide.topAnchor],
+            [_secondLabel.leadingAnchor constraintEqualToAnchor:layoutGuide.leadingAnchor],
+            [_secondLabel.widthAnchor constraintEqualToConstant:0],
         ]];
     }
 
-    // 速度固定中间：链恒居中
+    // 速度链定位：沿用原作者三方向逻辑（居中时 centerX，左上 leading，右上 trailing）
     _centerXConstraint = [_chainView.centerXAnchor constraintEqualToAnchor:layoutGuide.centerXAnchor];
-    [_constraints addObject:_centerXConstraint];
+    if (isCentered) {
+        [_constraints addObject:_centerXConstraint];
+    }
+
+    _leadingConstraint = [_chainView.leadingAnchor constraintEqualToAnchor:_contentView.leadingAnchor constant:10];
+    if (selectedMode == HUDPresetPositionTopLeft) {
+        [_constraints addObject:_leadingConstraint];
+    }
+
+    _trailingConstraint = [_chainView.trailingAnchor constraintEqualToAnchor:_contentView.trailingAnchor constant:-10];
+    if (selectedMode == HUDPresetPositionTopRight) {
+        [_constraints addObject:_trailingConstraint];
+    }
 
     // blurView 包住整条链
     [_constraints addObjectsFromArray:@[
